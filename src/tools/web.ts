@@ -8,6 +8,7 @@ interface WebSession {
   csrfToken: string;
   region: string;
   capturedAt: Date;
+  atcExpiresAt?: Date; // parsed from the at_c JWT exp claim
 }
 
 export const webSessions = new Map<string, WebSession>();
@@ -15,6 +16,92 @@ export const webSessions = new Map<string, WebSession>();
 // Derive dashboard base URL from region
 function dashboardUrl(region: string): string {
   return `https://${region}.dashboard.clevertap.com`;
+}
+
+// Strip the "TEST-" prefix that CleverTap uses in REST API account IDs
+// but not in dashboard UI URLs (e.g. TEST-KKW-W49-RK6Z → KKW-W49-RK6Z)
+function dashboardAccountId(accountId: string): string {
+  return accountId.replace(/^TEST-/i, "");
+}
+
+// Strip JSONP wrapper, e.g. globalJsonPCallback({...}), and return the inner JSON string
+function stripJsonp(text: string): string {
+  const m = text.match(/^[a-zA-Z_$][a-zA-Z0-9_$]*\s*\(([\s\S]*)\)\s*;?\s*$/);
+  return m ? m[1] : text;
+}
+
+// Parse the exp claim from the at_c JWT in the cookie header
+function parseAtcExpiry(cookieHeader: string): Date | undefined {
+  const m = cookieHeader.match(/(?:^|[; ])at_c=([^;]+)/);
+  if (!m) return undefined;
+  try {
+    const b64 = m[1].split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
+    return payload.exp ? new Date(payload.exp * 1000) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Returns true when the stored at_c token expires within the next 60 seconds
+function isSessionExpired(session: WebSession): boolean {
+  if (!session.atcExpiresAt) return false;
+  return session.atcExpiresAt.getTime() < Date.now() + 60_000;
+}
+
+// Re-capture session silently using a headless browser and existing cookies.
+// The browser will trigger Auth0 refresh automatically if rt_c is still valid.
+// Returns the refreshed session, or null if rt_c is also expired (needs full re-login).
+async function refreshSession(projectName: string, region: string): Promise<WebSession | null> {
+  const existing = webSessions.get(projectName);
+  if (!existing) return null;
+
+  const baseUrl = dashboardUrl(region);
+  let browser: Browser | undefined;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext();
+
+    // Restore existing cookies into the Playwright context
+    const playwrightCookies = existing.cookie.split(/;\s*/).flatMap((pair) => {
+      const idx = pair.indexOf("=");
+      if (idx < 0) return [];
+      const name = pair.slice(0, idx).trim();
+      const value = pair.slice(idx + 1);
+      return [{ name, value, domain: `${region}.dashboard.clevertap.com`, path: "/" as const }];
+    });
+    await context.addCookies(playwrightCookies);
+
+    const page = await context.newPage();
+    let capturedCsrf = "";
+    page.on("response", async (response) => {
+      const csrf = response.headers()["x-clevertap-csrf-token"];
+      if (csrf) capturedCsrf = csrf;
+    });
+
+    await page.goto(`${baseUrl}/`, { waitUntil: "load", timeout: 60000 });
+
+    // If we ended up on the login page, rt_c is also expired — needs full re-login
+    if (page.url().includes("/login")) {
+      await browser.close();
+      return null;
+    }
+
+    await page.waitForTimeout(2000);
+    const sessionData = await extractSession(context, region);
+    await browser.close();
+
+    if (!sessionData?.cookie) return null;
+
+    const csrfToken = capturedCsrf || sessionData.csrfToken;
+    const atcExpiresAt = parseAtcExpiry(sessionData.cookie);
+    const refreshed: WebSession = { cookie: sessionData.cookie, csrfToken, region, capturedAt: new Date(), atcExpiresAt };
+    webSessions.set(projectName, refreshed);
+    return refreshed;
+  } catch {
+    if (browser) { try { await browser.close(); } catch { /* ignore */ } }
+    return null;
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -25,16 +112,32 @@ async function extractSession(
 ): Promise<{ cookie: string; csrfToken: string } | null> {
   const origin = dashboardUrl(region);
 
-  // Grab all cookies for the dashboard origin
-  const cookies = await context.cookies(origin);
+  // Grab ALL cookies across all domains — at_c / rt_c are set on .clevertap.com
+  // (not just the dashboard subdomain) so we need the full jar.
+  const allCookies = await context.cookies();
+  if (allCookies.length === 0) return null;
+
+  // The Cookie header for requests to the dashboard needs:
+  //  - cookies from the dashboard domain  (csrf, WSESSIONID, JSESSIONID, AWSALB*, etc.)
+  //  - at_c / rt_c from .clevertap.com    (JWT access + refresh tokens)
+  // We include everything that belongs to any clevertap.com subdomain.
+  const dashboardHost = new URL(origin).hostname; // e.g. us1.dashboard.clevertap.com
+  const cookies = allCookies.filter((c) =>
+    dashboardHost.endsWith(c.domain.replace(/^\./, "")) ||
+    c.domain.replace(/^\./, "") === "clevertap.com" ||
+    dashboardHost.includes(c.domain.replace(/^\./, ""))
+  );
+
   if (cookies.length === 0) return null;
 
   const cookieHeader = cookies
     .map((c) => `${c.name}=${c.value}`)
     .join("; ");
 
-  // Look for CSRF token in cookies first (CleverTap typically stores it as a cookie)
+  // Look for CSRF token in cookies — prefer exact 'csrf' name (integer token used in X-CleverTap-CSRF-Token)
+  // before partial matches like 'secret_csrf' which is a UUID used by Auth0 only
   let csrfToken =
+    cookies.find((c) => c.name === "csrf")?.value ??
     cookies.find(
       (c) =>
         c.name.toLowerCase().includes("csrf") ||
@@ -123,8 +226,11 @@ export const webTools = [
       }
 
       const region = projMeta.region;
+      const accountId = projMeta.accountId;
       const baseUrl = dashboardUrl(region);
-      const loginUrl = `${baseUrl}/login`;
+      // Navigate directly to the account dashboard so the session is scoped to this account.
+      // dashboardAccountId strips the TEST- prefix used in REST API IDs but not in UI URLs.
+      const entryUrl = `${baseUrl}/${dashboardAccountId(accountId)}/`;
 
       let browser: Browser | undefined;
       try {
@@ -139,10 +245,9 @@ export const webTools = [
           if (csrf) capturedCsrf = csrf;
         });
 
-        await page.goto(loginUrl, { waitUntil: "networkidle" });
+        await page.goto(entryUrl, { waitUntil: "load", timeout: 60000 });
 
-        // Wait until the user lands on a page that is NOT the login page,
-        // or until the timeout is reached.
+        // Wait until the user lands on ANY dashboard page (not login)
         const deadline = Date.now() + timeout_seconds * 1000;
         let loggedIn = false;
 
@@ -168,9 +273,17 @@ export const webTools = [
           };
         }
 
-        // Give the page a moment to finish loading post-login requests
-        await page.waitForTimeout(2000);
+        // After login the user might be on a different account (e.g. PRD).
+        // Navigate explicitly to this project's account URL so the session
+        // (WSESSIONID, csrf cookie) gets scoped to the right account.
+        const accountUrl = `${baseUrl}/${dashboardAccountId(accountId)}/`;
+        if (!page.url().startsWith(accountUrl)) {
+          await page.goto(accountUrl, { waitUntil: "load", timeout: 60000 });
+          await page.waitForTimeout(2000);
+        }
 
+        // Reset captured CSRF now that we are on the right account page
+        // (the response headers for this navigation will have the correct token)
         const sessionData = await extractSession(context, region);
         if (!sessionData || !sessionData.cookie) {
           await browser.close();
@@ -186,13 +299,17 @@ export const webTools = [
         }
 
         // Prefer the CSRF token intercepted from response headers
-        const csrfToken = capturedCsrf || sessionData.csrfToken;
+        // Prefer the integer csrf cookie value; capturedCsrf from the response header is a UUID
+        // used internally by Auth0 and is NOT the token the dashboard API expects.
+        const csrfToken = sessionData.csrfToken || capturedCsrf;
+        const atcExpiresAt = parseAtcExpiry(sessionData.cookie);
 
         webSessions.set(projectName, {
           cookie: sessionData.cookie,
           csrfToken,
           region,
           capturedAt: new Date(),
+          atcExpiresAt,
         });
 
         await browser.close();
@@ -204,12 +321,14 @@ export const webTools = [
               text: [
                 `✅ Web session captured for project "${projectName}"!`,
                 "",
-                `Dashboard  : ${baseUrl}`,
+                `Dashboard  : ${accountUrl}`,
                 `CSRF token : ${csrfToken ? csrfToken : "(not found — may not be needed)"}`,
                 `Cookies    : ${sessionData.cookie.length} chars captured`,
                 `Captured at: ${new Date().toISOString()}`,
+                `Token exp  : ${atcExpiresAt ? atcExpiresAt.toISOString() : "(unknown)"}`,
                 "",
                 "You can now use clevertap_web_request to make dashboard API calls with these credentials.",
+                "The session refreshes automatically before each request as long as your browser session is active.",
               ].join("\n"),
             },
           ],
@@ -253,6 +372,7 @@ export const webTools = [
         };
       }
 
+      const expired = isSessionExpired(session);
       return {
         content: [
           {
@@ -260,9 +380,12 @@ export const webTools = [
             text: [
               `Web session for "${projectName}":`,
               `  Captured at : ${session.capturedAt.toISOString()}`,
+              `  Token exp   : ${session.atcExpiresAt ? session.atcExpiresAt.toISOString() : "(unknown)"}`,
+              `  Status      : ${expired ? "⚠️  expired (will auto-refresh on next request)" : "✅ active"}`,
               `  Region      : ${session.region}`,
               `  CSRF token  : ${session.csrfToken ? session.csrfToken : "(empty)"}`,
               `  Cookie size : ${session.cookie.length} chars`,
+              `  Cookie names: ${session.cookie.split("; ").map((p) => p.split("=")[0]).join(", ")}`,
             ].join("\n"),
           },
         ],
@@ -314,7 +437,7 @@ export const webTools = [
       };
 
       const projectName = projectArg ?? meta.defaultProject;
-      const session = webSessions.get(projectName);
+      let session = webSessions.get(projectName);
 
       if (!session) {
         return {
@@ -328,6 +451,17 @@ export const webTools = [
         };
       }
 
+      if (isSessionExpired(session)) {
+        const refreshed = await refreshSession(projectName, session.region);
+        if (!refreshed) {
+          return {
+            content: [{ type: "text" as const, text: `Session for "${projectName}" has fully expired. Run clevertap_web_login to re-authenticate.` }],
+            isError: true,
+          };
+        }
+        session = refreshed;
+      }
+
       const baseUrl = dashboardUrl(session.region);
       const url = new URL(`${baseUrl}${path}`);
       if (params) {
@@ -339,23 +473,45 @@ export const webTools = [
       const headers: Record<string, string> = {
         "Cookie": session.cookie,
         "Content-Type": "application/json",
-        "Accept": "application/json",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en,es;q=0.9",
         "X-Requested-With": "XMLHttpRequest",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+        "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"macOS"',
+        "DNT": "1",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
       };
       if (session.csrfToken) {
-        headers["x-clevertap-csrf-token"] = session.csrfToken;
+        headers["X-CleverTap-CSRF-Token"] = session.csrfToken;
       }
 
-      const response = await fetch(url.toString(), {
+      let response = await fetch(url.toString(), {
         method,
         headers,
+        redirect: "manual",
         ...(body ? { body: JSON.stringify(body) } : {}),
       });
+
+      // A redirect means the session expired server-side — try one silent refresh
+      if (response.status === 0 || (response.status >= 300 && response.status < 400)) {
+        const refreshed = await refreshSession(projectName, session.region);
+        if (!refreshed) {
+          return { content: [{ type: "text" as const, text: `Session expired (server redirect). Run clevertap_web_login to re-authenticate.` }], isError: true };
+        }
+        session = refreshed;
+        headers["Cookie"] = session.cookie;
+        if (session.csrfToken) headers["X-CleverTap-CSRF-Token"] = session.csrfToken;
+        response = await fetch(url.toString(), { method, headers, redirect: "manual", ...(body ? { body: JSON.stringify(body) } : {}) });
+      }
 
       const responseText = await response.text();
       let parsed: unknown;
       try {
-        parsed = JSON.parse(responseText);
+        parsed = JSON.parse(stripJsonp(responseText));
       } catch {
         parsed = responseText;
       }
@@ -416,15 +572,15 @@ export const webTools = [
         .default(false)
         .describe("Include archived campaigns (default false)"),
       status: z
-        .array(z.string())
+        .array(z.number().int())
         .optional()
         .describe(
-          'Filter by campaign status. Allowed values: "SCHEDULED", "RUNNING", "COMPLETED", "STOPPED", "DRAFT"'
+          "Filter by campaign status codes: 0=scheduled, 1=running, 2=stopped, 3=completed, 7=approval pending, 9=rejected, 10=draft, 11=awaiting next run"
         ),
       channel: z
         .array(z.number().int())
         .optional()
-        .describe("Filter by channel codes (numeric)"),
+        .describe("Filter by channel codes. Engagement: 2=push, 3=in-app message, 9=app inbox, 12=native display. Direct to user: 0=email, 1=SMS, 10=WhatsApp"),
       campaign_type: z
         .array(z.number().int())
         .optional()
@@ -437,8 +593,8 @@ export const webTools = [
         .min(1)
         .max(100)
         .optional()
-        .default(15)
-        .describe("Number of results per page (default 15, max 100)"),
+        .default(100)
+        .describe("Number of results per page (default 100, max 100)"),
       page_number: z
         .number()
         .int()
@@ -490,7 +646,7 @@ export const webTools = [
         date_to?: string;
         search_keyword?: string;
         archive?: boolean;
-        status?: string[];
+        status?: number[];
         channel?: number[];
         campaign_type?: number[];
         page_size?: number;
@@ -500,7 +656,7 @@ export const webTools = [
       };
 
       const projectName = projectArg ?? meta.defaultProject;
-      const session = webSessions.get(projectName);
+      let session = webSessions.get(projectName);
 
       if (!session) {
         return {
@@ -519,6 +675,17 @@ export const webTools = [
         throw new Error(`Unknown project "${projectName}".`);
       }
 
+      if (isSessionExpired(session)) {
+        const refreshed = await refreshSession(projectName, session.region);
+        if (!refreshed) {
+          return {
+            content: [{ type: "text" as const, text: `Session for "${projectName}" has fully expired. Run clevertap_web_login to re-authenticate.` }],
+            isError: true,
+          };
+        }
+        session = refreshed;
+      }
+
       const { accountId, region } = projMeta;
       const baseUrl = dashboardUrl(region);
       const effectivePageSize = page_size ?? 15;
@@ -529,7 +696,7 @@ export const webTools = [
         dateTo: date_to ?? "",
         statsDateFrom: stats_date_from,
         statsDateTo: stats_date_to,
-        searchKeyword: search_keyword ?? "",
+        searchKeyword: search_keyword ?? null,
         archive: archive ?? false,
         prefiltered: null,
         purpose: purpose ?? 1,
@@ -549,7 +716,7 @@ export const webTools = [
         totalCountLimit: 2001,
       };
 
-      const url = new URL(`${baseUrl}/${accountId}/json/report/load`);
+      const url = new URL(`${baseUrl}/${dashboardAccountId(accountId)}/json/report/load`);
       url.searchParams.set("q", JSON.stringify(q));
       url.searchParams.set("source", "");
       url.searchParams.set("limit", String(effectivePageSize));
@@ -557,24 +724,45 @@ export const webTools = [
       url.searchParams.set("requestTs", String(Date.now()));
 
       const headers: Record<string, string> = {
-        Cookie: session.cookie,
-        Accept: "application/json, text/plain, */*",
+        "Cookie": session.cookie,
+        "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en,es;q=0.9",
-        Referer: `${baseUrl}/${accountId}/campaigns`,
+        "Referer": `${baseUrl}/${dashboardAccountId(accountId)}/campaigns`,
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+        "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"macOS"',
+        "DNT": "1",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
       };
       if (session.csrfToken) {
-        headers["x-clevertap-csrf-token"] = session.csrfToken;
+        headers["X-CleverTap-CSRF-Token"] = session.csrfToken;
       }
 
-      const response = await fetch(url.toString(), {
+      let response = await fetch(url.toString(), {
         method: "GET",
         headers,
+        redirect: "manual",
       });
+
+      // A redirect means the session expired server-side — try one silent refresh
+      if (response.status === 0 || (response.status >= 300 && response.status < 400)) {
+        const refreshed = await refreshSession(projectName, session.region);
+        if (!refreshed) {
+          return { content: [{ type: "text" as const, text: `Session expired (server redirect). Run clevertap_web_login to re-authenticate.` }], isError: true };
+        }
+        session = refreshed;
+        headers["Cookie"] = session.cookie;
+        if (session.csrfToken) headers["X-CleverTap-CSRF-Token"] = session.csrfToken;
+        response = await fetch(url.toString(), { method: "GET", headers, redirect: "manual" });
+      }
 
       const responseText = await response.text();
       let parsed: unknown;
       try {
-        parsed = JSON.parse(responseText);
+        parsed = JSON.parse(stripJsonp(responseText));
       } catch {
         parsed = responseText;
       }
@@ -612,43 +800,34 @@ export const webTools = [
   {
     name: "clevertap_send_test_push",
     description:
-      "Send a test push notification to a specific user via the CleverTap dashboard. Useful for previewing a push message on a real device. Requires a web session — call clevertap_web_login first. The user is identified by their CleverTap internal ID (iid / objectId). You can optionally provide device tokens per platform; if omitted the dashboard will use the tokens already registered for the user.",
+      "Send a test push notification to a specific device token via the CleverTap dashboard. " +
+      "Requires a web session — call clevertap_web_login first. " +
+      "Get the device token and channel from clevertap_get_profile (platformInfo[].push_token and profileData fields). " +
+      "Use platform='ios' for APNS tokens (apnsTokens field), 'android' for FCM/GCM tokens (gcmIds field).",
     inputSchema: z.object({
-      iid: z
-        .string()
-        .describe(
-          "CleverTap internal user ID (objectId / iid), e.g. \"7760224\". Found in the profile view URL: /j{iid}/profile-view.html."
-        ),
       title: z.string().describe("Push notification title"),
       message: z.string().describe("Push notification body text"),
-      devices: z
-        .enum(["ios", "android", "webpush", "all"])
-        .default("all")
-        .describe(
-          "Target platform(s): \"ios\", \"android\", \"webpush\", or \"all\" (default)"
-        ),
       device_token: z
         .string()
-        .optional()
         .describe(
-          "Device push token to use. If provided it is applied to all platform token fields (gcmIds, apnsTokens, chromeIds, etc.). If omitted an empty string is sent and the dashboard resolves the token from the user's profile."
+          "Device push token from the user's profile (platformInfo[].push_token). " +
+          "Use the token matching the target platform (APNS for iOS, GCM/FCM for Android)."
         ),
-      app_id: z
-        .number()
-        .int()
-        .optional()
-        .default(0)
-        .describe("App ID (default 0)"),
-      push_dispatcher_type: z
-        .enum(["gcm", "apns", "hms"])
-        .optional()
-        .default("gcm")
-        .describe("Push dispatcher type (default \"gcm\")"),
-      wzrk_cid: z
+      platform: z
+        .enum(["ios", "android"])
+        .describe("Target platform: 'ios' sends via apnsTokens, 'android' sends via gcmIds."),
+      channel: z
+        .string()
+        .describe(
+          "Push channel name configured in CleverTap (e.g. \"yummypush\"). " +
+          "Used as wzrk_cid and channel in the payload."
+        ),
+      deep_link: z
         .string()
         .optional()
-        .default("")
-        .describe("Campaign ID for attribution (wzrk_cid, default empty)"),
+        .describe(
+          "Optional deep link URL to attach to the notification (wzrk_dl). E.g. \"https://www.google.com/\" or a custom app scheme."
+        ),
       project: z
         .string()
         .optional()
@@ -667,29 +846,25 @@ export const webTools = [
       }
     ) => {
       const {
-        iid,
         title,
         message,
-        devices,
         device_token,
-        app_id,
-        push_dispatcher_type,
-        wzrk_cid,
+        platform,
+        channel,
+        deep_link,
         project: projectArg,
       } = args as {
-        iid: string;
         title: string;
         message: string;
-        devices: "ios" | "android" | "webpush" | "all";
-        device_token?: string;
-        app_id?: number;
-        push_dispatcher_type?: string;
-        wzrk_cid?: string;
+        device_token: string;
+        platform: "ios" | "android";
+        channel: string;
+        deep_link?: string;
         project?: string;
       };
 
       const projectName = projectArg ?? meta.defaultProject;
-      const session = webSessions.get(projectName);
+      let session = webSessions.get(projectName);
 
       if (!session) {
         return {
@@ -708,67 +883,113 @@ export const webTools = [
         throw new Error(`Unknown project "${projectName}".`);
       }
 
+      if (isSessionExpired(session)) {
+        const refreshed = await refreshSession(projectName, session.region);
+        if (!refreshed) {
+          return {
+            content: [{ type: "text" as const, text: `Session for "${projectName}" has fully expired. Run clevertap_web_login to re-authenticate.` }],
+            isError: true,
+          };
+        }
+        session = refreshed;
+      }
+
       const { accountId, region } = projMeta;
       const baseUrl = dashboardUrl(region);
 
-      // uids is the negative integer of the iid
-      const uids = -Math.abs(parseInt(iid, 10));
-      const token = device_token ?? "";
+      // Build token fields based on platform (matches real dashboard HAR request)
+      const tokenFields = platform === "ios"
+        ? { apnsTokens: device_token, isIOS: true, isAndroid: true }
+        : { gcmIds: device_token, isAndroid: true, isIOS: true };
 
       const payload = {
         title,
         message,
-        type: "uid",
-        uids,
-        iid,
-        gcmIds: token,
-        apnsTokens: token,
-        winUris: token,
-        chromeIds: token,
-        firefoxIds: token,
-        safariIds: token,
-        kaiosIds: token,
         kv: {
-          "1": { wzrk_cid: wzrk_cid ?? "", wzrk_bi: "2", wzrk_bc: "" },
-          "2": {},
+          "1": {
+            wzrk_cid: channel,
+            wzrk_bc: "",
+            wzrk_bi: "2",
+            wzrk_sif: false,
+            pr: "",
+            wzrk_nms: "",
+            del_pr: "high",
+            ...(deep_link ? { wzrk_dl: deep_link } : {}),
+          },
+          "2": {
+            wzrk_mutable_content: true,
+            wzrk_interruption_level: "active",
+            wzrk_relevance_score: 0.5,
+            ...(deep_link ? { wzrk_dl: deep_link } : {}),
+          },
           "3": {},
         },
-        appId: app_id ?? 0,
-        usePushDispatcherType: push_dispatcher_type ?? "gcm",
+        appId: 0,
+        mode: "push",
+        testPersonalisation: true,
+        channel,
+        type: "token",
+        eventData: {
+          eventPropertyMode: "0",
+          event: -1,
+          constantEventPropertyId: "",
+          eventPropertyData: {},
+        },
+        contentApiNamespaces: [],
+        contentApiLabelData: {},
+        ...tokenFields,
       };
-
-      const effectiveDevices = devices === "all" ? "android,ios,webpush" : devices;
 
       const url = new URL(
-        `${baseUrl}/${accountId}/json/push/interact/previewTarget`
+        `${baseUrl}/${dashboardAccountId(accountId)}/json/push/interact/previewTarget`
       );
-      url.searchParams.set("devices", effectiveDevices);
-      url.searchParams.set("globalCallback", "globalJsonPCallback");
+      url.searchParams.set("devices", ",android,ios");
+      url.searchParams.set("uc", "1");
       url.searchParams.set("requestTs", String(Date.now()));
-      url.searchParams.set("dervied_page_name", "/profile-view.html");
 
       const headers: Record<string, string> = {
-        Cookie: session.cookie,
-        "Content-Type": "application/json; charset=UTF-8",
-        Accept: "application/json, text/javascript, */*; q=0.01",
-        "X-Requested-With": "XMLHttpRequest",
-        Origin: baseUrl,
-        Referer: `${baseUrl}/${accountId}/j${iid}/profile-view.html`,
+        "Cookie": session.cookie,
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en,es;q=0.9",
+        "Origin": baseUrl,
+        "Referer": `${baseUrl}/${dashboardAccountId(accountId)}/campaigns/campaign/new/push/content`,
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+        "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"macOS"',
+        "DNT": "1",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
       };
       if (session.csrfToken) {
-        headers["x-clevertap-csrf-token"] = session.csrfToken;
+        headers["X-CleverTap-CSRF-Token"] = session.csrfToken;
       }
 
-      const response = await fetch(url.toString(), {
+      let response = await fetch(url.toString(), {
         method: "POST",
         headers,
         body: JSON.stringify(payload),
+        redirect: "manual",
       });
+
+      // A redirect means the session expired server-side — try one silent refresh
+      if (response.status === 0 || (response.status >= 300 && response.status < 400)) {
+        const refreshed = await refreshSession(projectName, session.region);
+        if (!refreshed) {
+          return { content: [{ type: "text" as const, text: `Session expired (server redirect). Run clevertap_web_login to re-authenticate.` }], isError: true };
+        }
+        session = refreshed;
+        headers["Cookie"] = session.cookie;
+        if (session.csrfToken) headers["X-CleverTap-CSRF-Token"] = session.csrfToken;
+        response = await fetch(url.toString(), { method: "POST", headers, body: JSON.stringify(payload), redirect: "manual" });
+      }
 
       const responseText = await response.text();
       let parsed: unknown;
       try {
-        parsed = JSON.parse(responseText);
+        parsed = JSON.parse(stripJsonp(responseText));
       } catch {
         parsed = responseText;
       }
