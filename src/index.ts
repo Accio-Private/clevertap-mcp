@@ -8,7 +8,7 @@ import { profileTools } from "./tools/profiles.js";
 import { campaignTools } from "./tools/campaigns.js";
 import { reportTools } from "./tools/reports.js";
 import { genericTools } from "./tools/generic.js";
-// import { webTools, webSessions } from "./tools/web.js"; // TODO: next version
+import { webTools, webSessions } from "./tools/web.js";
 
 // --- Build projects map ---
 // CLEVERTAP_PROJECTS accepts a JSON array:
@@ -276,19 +276,20 @@ if (clients.size === 0) {
     });
   }
 
-  // ── Web (browser) tools — TODO: next version ──
-  // const webMeta = { projectNames, defaultProject, projectMeta, webSessions };
-  // for (const tool of webTools) {
-  //   server.tool(tool.name, tool.description, tool.inputSchema.shape as any, async (args: unknown) => {
-  //     try {
-  //       const result = await (tool.handler as any)(null, args, webMeta);
-  //       return result;
-  //     } catch (error) {
-  //       const message = error instanceof Error ? error.message : String(error);
-  //       return { content: [{ type: "text" as const, text: `Error: ${message}` }], isError: true };
-  //     }
-  //   });
-  // }
+  // ── Web (browser) tools ──────────────────────────────────────────────────────
+  const webMeta = { projectNames, defaultProject, projectMeta, webSessions };
+  for (const tool of webTools) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    server.tool(tool.name, tool.description, tool.inputSchema.shape as any, async (args: unknown) => {
+      try {
+        const result = await (tool.handler as any)(null, args, webMeta);
+        return result;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { content: [{ type: "text" as const, text: `Error: ${message}` }], isError: true };
+      }
+    });
+  }
 }
 
 async function main() {

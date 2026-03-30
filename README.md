@@ -67,6 +67,20 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for the
 | `clevertap_request` | Make any raw REST API request |
 | `clevertap_poll` | Poll a pending async request by `req_id` |
 
+### Web / Browser
+| Tool | Description |
+|------|-------------|
+| `clevertap_web_login` | Open a Chromium window and capture the dashboard session cookie + CSRF token after manual login (supports SSO and 2FA) |
+| `clevertap_web_session_status` | Check whether a web session has been captured for a project, and when it was obtained |
+| `clevertap_web_request` | Make an authenticated request to any CleverTap dashboard endpoint using the captured session |
+| `clevertap_get_campaigns_ui` | List campaigns from the dashboard UI API — richer data than the REST API (status, sent, impressions, clicks, edit URL) |
+| `clevertap_send_test_push` | Send a test push notification to a specific device token. Accepts the push token from `clevertap_get_profile` (`platformInfo[].push_token`), the target platform (`ios`/`android`), the push channel name, and an optional deep link URL. |
+
+> **Prerequisite for web tools:** install the Playwright Chromium binary once after `npm install`:
+> ```bash
+> npx playwright install chromium
+> ```
+
 ---
 
 ## Installation
@@ -75,6 +89,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for the
 git clone https://github.com/your-org/clevertap-mcp.git
 cd clevertap-mcp
 npm install
+npx playwright install chromium   # required for web/browser tools
 npm run build
 ```
 
@@ -157,7 +172,7 @@ src/
     campaigns.ts    # Campaign tools
     reports.ts      # Analytics and report tools
     generic.ts      # Raw request / poll tools
-    web.ts          # (future) Browser session tools via Playwright
+    web.ts          # Browser session tools via Playwright (login, campaigns UI, test push)
 ```
 
 ---
