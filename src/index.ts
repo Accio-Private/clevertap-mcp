@@ -292,15 +292,25 @@ async function main() {
 
     app.use("/mcp", (req, _res, next) => {
       const authHeader = req.headers["authorization"];
+      const mcpMethod = (req.body as Record<string, unknown>)?.method ?? "(no method / GET)";
       if (authHeader) {
         const prefix = authHeader.slice(0, 30);
-        console.error(`[DEBUG][auth] /mcp request — Authorization header present (prefix: "${prefix}...")`);
+        console.error(`[DEBUG][auth] ${req.method} /mcp — Bearer present — MCP: ${mcpMethod} (prefix: "${prefix}...")`);
       } else {
-        console.error(`[DEBUG][auth] /mcp request — Authorization header MISSING`);
+        console.error(`[DEBUG][auth] ${req.method} /mcp — Authorization header MISSING — MCP: ${mcpMethod}`);
       }
       next();
-    }, bearerAuth, (req, res, next) => {
-      transport.handleRequest(req, res, req.body).catch(next);
+    }, bearerAuth, async (req, res, next) => {
+      try {
+        await transport.handleRequest(req, res, req.body);
+        const mcpMethod = (req.body as Record<string, unknown>)?.method ?? "(no method / GET)";
+        console.error(`[DEBUG][mcp] ${req.method} /mcp — transport OK — MCP: ${mcpMethod} — status: ${res.statusCode}`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const mcpMethod = (req.body as Record<string, unknown>)?.method ?? "(no method / GET)";
+        console.error(`[DEBUG][mcp] ${req.method} /mcp — transport ERROR — MCP: ${mcpMethod} — ${msg}`);
+        next(err);
+      }
     });
 
     console.error(
@@ -326,6 +336,14 @@ async function main() {
       `CleverTap MCP server listening on http://0.0.0.0:${PORT} — no auth, MCP at /mcp — projects: ${projectNames.join(", ")}`,
     );
   }
+
+  app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[DEBUG][error] Unhandled Express error — ${req.method} ${req.path}: ${msg}`);
+    if (!res.headersSent) {
+      res.status(500).json({ error: "internal_server_error", error_description: msg });
+    }
+  });
 
   app.listen(PORT, "0.0.0.0");
 }
