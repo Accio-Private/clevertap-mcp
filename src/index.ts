@@ -209,10 +209,6 @@ async function main() {
     !!process.env.GOOGLE_CLIENT_SECRET &&
     !!process.env.REDIS_HOST;
 
-  console.error(
-    `[DEBUG][auth] OAuth env check — MCP_JWT_SECRET: ${!!process.env.MCP_JWT_SECRET}, GOOGLE_CLIENT_ID: ${!!process.env.GOOGLE_CLIENT_ID}, GOOGLE_CLIENT_SECRET: ${!!process.env.GOOGLE_CLIENT_SECRET}, REDIS_HOST: ${!!process.env.REDIS_HOST} → oauthEnabled: ${oauthEnabled}`,
-  );
-
   if (oauthEnabled) {
     const serverUrl =
       process.env.MCP_SERVER_URL ?? `http://localhost:${PORT}`;
@@ -236,14 +232,6 @@ async function main() {
     );
 
     // Standard MCP OAuth endpoints + .well-known metadata
-    // Log all OAuth flow requests to surface failures in /authorize, /token, /register
-    app.use((req, _res, next) => {
-      const oauthPaths = ["/authorize", "/token", "/register", "/revoke", "/.well-known"];
-      if (oauthPaths.some(p => req.path.startsWith(p))) {
-        console.error(`[DEBUG][oauth] ${req.method} ${req.path} — body keys: ${Object.keys(req.body ?? {}).join(", ") || "(none)"}`);
-      }
-      next();
-    });
     app.use(
       mcpAuthRouter({
         provider,
@@ -262,22 +250,18 @@ async function main() {
         OAUTH_SESSION_COOKIE
       ];
 
-      console.error(`[DEBUG][oauth] /auth/callback — code: ${!!code}, state: ${!!state}, cookieSessionId: ${!!cookieSessionId}, stateMatch: ${state === cookieSessionId}`);
-
       if (!code || !state || state !== cookieSessionId) {
-        console.error(`[DEBUG][oauth] /auth/callback rejected — code: ${!!code}, state: ${!!state}, cookieMatch: ${state === cookieSessionId}`);
         res.status(400).send("Invalid OAuth callback: state mismatch or missing code");
         return;
       }
 
       try {
         const redirectUrl = await provider.handleGoogleCallback(code, state);
-        console.error(`[DEBUG][oauth] /auth/callback success — redirecting to: ${redirectUrl.split("?")[0]}...`);
         res.clearCookie(OAUTH_SESSION_COOKIE);
         res.redirect(redirectUrl);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        console.error("[OAuth callback] ERROR:", message);
+        console.error("[auth/callback] error:", message);
         res.status(500).send(`OAuth callback failed: ${message}`);
       }
     });
@@ -291,28 +275,14 @@ async function main() {
       resourceMetadataUrl,
     });
 
-    app.use("/mcp", (req, _res, next) => {
-      const authHeader = req.headers["authorization"];
-      const mcpMethod = (req.body as Record<string, unknown>)?.method ?? "(no method / GET)";
-      if (authHeader) {
-        const prefix = authHeader.slice(0, 30);
-        console.error(`[DEBUG][auth] ${req.method} /mcp — Bearer present — MCP: ${mcpMethod} (prefix: "${prefix}...")`);
-      } else {
-        console.error(`[DEBUG][auth] ${req.method} /mcp — Authorization header MISSING — MCP: ${mcpMethod}`);
-      }
-      next();
-    }, bearerAuth, async (req, res, next) => {
-      const mcpMethod = (req.body as Record<string, unknown>)?.method ?? "(no method / GET)";
+    app.use("/mcp", bearerAuth, async (req, res, next) => {
       try {
         const server = createServer();
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
         res.on("close", () => { transport.close(); server.close(); });
         await server.connect(transport);
         await transport.handleRequest(req, res, req.body);
-        console.error(`[DEBUG][mcp] ${req.method} /mcp — transport OK — MCP: ${mcpMethod} — status: ${res.statusCode}`);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[DEBUG][mcp] ${req.method} /mcp — transport ERROR — MCP: ${mcpMethod} — ${msg}`);
         next(err);
       }
     });
@@ -351,7 +321,7 @@ async function main() {
 
   app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[DEBUG][error] Unhandled Express error — ${req.method} ${req.path}: ${msg}`);
+    console.error(`Unhandled error — ${req.method} ${req.path}: ${msg}`);
     if (!res.headersSent) {
       res.status(500).json({ error: "internal_server_error", error_description: msg });
     }

@@ -125,24 +125,17 @@ export class GoogleOAuthProvider implements OAuthServerProvider {
     _redirectUri?: string,
     resource?: URL,
   ): Promise<OAuthTokens> {
-    console.error(`[DEBUG][oauth] exchangeAuthorizationCode — clientId: ${client.client_id}, resource: ${resource?.href ?? "(none)"}`);
     const code = await this.store.getAuthCode(authorizationCode);
-    if (!code) {
-      console.error(`[DEBUG][oauth] exchangeAuthorizationCode FAILED — code not found in store`);
-      throw new Error("Invalid authorization code");
-    }
+    if (!code) throw new Error("Invalid authorization code");
     if (code.expires_at < Date.now()) {
-      console.error(`[DEBUG][oauth] exchangeAuthorizationCode FAILED — code expired at ${new Date(code.expires_at).toISOString()}`);
       await this.store.removeAuthCode(authorizationCode);
       throw new Error("Authorization code has expired");
     }
     if (code.client_id !== client.client_id) {
-      console.error(`[DEBUG][oauth] exchangeAuthorizationCode FAILED — client_id mismatch: token has ${code.client_id}, request has ${client.client_id}`);
       throw new Error("Client ID mismatch");
     }
 
     const resourceUrl = resource?.href ?? code.resource ?? this.resourceUrl;
-    console.error(`[DEBUG][oauth] exchangeAuthorizationCode OK — issuing tokens for sub: ${code.user_id}, resource: ${resourceUrl}`);
     const tokens = this.jwtService.generateTokenPair(
       code.user_id,
       client.client_id,
@@ -162,20 +155,16 @@ export class GoogleOAuthProvider implements OAuthServerProvider {
     scopes?: string[],
     resource?: URL,
   ): Promise<OAuthTokens> {
-    console.error(`[DEBUG][oauth] exchangeRefreshToken — clientId: ${client.client_id}`);
     const payload = this.jwtService.verifyToken(refreshToken);
     if (!payload || payload.type !== "refresh") {
-      console.error(`[DEBUG][oauth] exchangeRefreshToken FAILED — invalid/expired refresh token (payload type: ${payload?.type ?? "null"})`);
       throw new Error("Invalid or expired refresh token");
     }
     const tokenClientId = payload.client_id ?? payload.azp;
     if (tokenClientId !== client.client_id) {
-      console.error(`[DEBUG][oauth] exchangeRefreshToken FAILED — client_id mismatch: token has ${tokenClientId}, request has ${client.client_id}`);
       throw new Error("Refresh token does not belong to this client");
     }
     const resourceUrl =
       resource?.href ?? payload.resource ?? this.resourceUrl;
-    console.error(`[DEBUG][oauth] exchangeRefreshToken OK — reissuing tokens for sub: ${payload.sub}, resource: ${resourceUrl}`);
     return this.jwtService.generateTokenPair(
       payload.sub,
       client.client_id,
