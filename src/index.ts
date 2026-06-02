@@ -1,7 +1,19 @@
 #!/usr/bin/env node
-import { createServer } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import {
+  mcpAuthRouter,
+  getOAuthProtectedResourceMetadataUrl,
+} from "@modelcontextprotocol/sdk/server/auth/router.js";
+import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
+import express from "express";
+import cookieParser from "cookie-parser";
+import { RedisOAuthStore } from "./auth/redis-store.js";
+import { JwtService } from "./auth/jwt-service.js";
+import {
+  GoogleOAuthProvider,
+  OAUTH_SESSION_COOKIE,
+} from "./auth/google-provider.js";
 import { z } from "zod";
 import { CleverTapClient, CleverTapRegion } from "./client.js";
 import { eventTools } from "./tools/events.js";
@@ -337,15 +349,130 @@ async function main() {
   await server.connect(transport);
 
   const PORT = parseInt(process.env.PORT ?? "3000", 10);
-  const httpServer = createServer((req, res) => {
-    transport.handleRequest(req, res);
-  });
+  const app = express();
 
-  httpServer.listen(PORT, "0.0.0.0", () => {
-    console.error(
-      `CleverTap MCP server listening on http://0.0.0.0:${PORT} — projects: ${projectNames.join(", ")}`,
+  // Trust reverse proxy so OAuth redirects use the correct https:// scheme
+  app.set("trust proxy", 1);
+
+  app.use(cookieParser());
+  app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
+  app.use((_req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "Authorization, Content-Type, mcp-session-id",
     );
+    res.setHeader(
+      "Access-Control-Allow-Methods",
+      "GET, POST, DELETE, OPTIONS",
+    );
+    next();
   });
+  app.options("*", (_req, res) => res.sendStatus(204));
+
+  // ── OAuth (only when all four env vars are present) ───────────────────────────
+  const oauthEnabled =
+    !!process.env.MCP_JWT_SECRET &&
+    !!process.env.GOOGLE_CLIENT_ID &&
+    !!process.env.GOOGLE_CLIENT_SECRET &&
+    !!process.env.REDIS_HOST;
+
+  if (oauthEnabled) {
+    const serverUrl =
+      process.env.MCP_SERVER_URL ?? `http://localhost:${PORT}`;
+    const resourceUrl = `${serverUrl}/mcp`;
+
+    const redisStore = new RedisOAuthStore(
+      process.env.REDIS_HOST!,
+      parseInt(process.env.REDIS_PORT ?? "6379", 10),
+    );
+    const jwtService = new JwtService(
+      process.env.MCP_JWT_SECRET!,
+      serverUrl,
+    );
+    const provider = new GoogleOAuthProvider(
+      redisStore,
+      jwtService,
+      process.env.GOOGLE_CLIENT_ID!,
+      process.env.GOOGLE_CLIENT_SECRET!,
+      serverUrl,
+      resourceUrl,
+    );
+
+    // Standard MCP OAuth endpoints + .well-known metadata
+    app.use(
+      mcpAuthRouter({
+        provider,
+        issuerUrl: new URL(serverUrl),
+        resourceServerUrl: new URL(resourceUrl),
+      }),
+    );
+
+    // Google OAuth callback — not part of the standard MCP OAuth router
+    app.get("/auth/callback", async (req, res) => {
+      const { code, state } = req.query as {
+        code?: string;
+        state?: string;
+      };
+      const cookieSessionId = (req.cookies as Record<string, string>)[
+        OAUTH_SESSION_COOKIE
+      ];
+
+      if (!code || !state || state !== cookieSessionId) {
+        res.status(400).send("Invalid OAuth callback: state mismatch or missing code");
+        return;
+      }
+
+      try {
+        const redirectUrl = await provider.handleGoogleCallback(code, state);
+        res.clearCookie(OAUTH_SESSION_COOKIE);
+        res.redirect(redirectUrl);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("[OAuth callback]", message);
+        res.status(500).send(`OAuth callback failed: ${message}`);
+      }
+    });
+
+    // MCP endpoint — protected by Bearer token
+    const resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(
+      new URL(resourceUrl),
+    );
+    const bearerAuth = requireBearerAuth({
+      verifier: provider,
+      resourceMetadataUrl,
+    });
+
+    app.use("/mcp", bearerAuth, (req, res, next) => {
+      transport.handleRequest(req, res, req.body).catch(next);
+    });
+
+    console.error(
+      `CleverTap MCP server listening on http://0.0.0.0:${PORT} — OAuth enabled, MCP at /mcp — projects: ${projectNames.join(", ")}`,
+    );
+  } else {
+    // No OAuth — serve /mcp without authentication (local / stdio use)
+    app.use("/mcp", (req, res, next) => {
+      transport.handleRequest(req, res, req.body).catch(next);
+    });
+
+    if (
+      process.env.GOOGLE_CLIENT_ID ||
+      process.env.MCP_JWT_SECRET ||
+      process.env.REDIS_HOST
+    ) {
+      console.error(
+        "CleverTap MCP: OAuth partially configured. Set MCP_JWT_SECRET, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and REDIS_HOST to enable OAuth.",
+      );
+    }
+
+    console.error(
+      `CleverTap MCP server listening on http://0.0.0.0:${PORT} — no auth, MCP at /mcp — projects: ${projectNames.join(", ")}`,
+    );
+  }
+
+  app.listen(PORT, "0.0.0.0");
 }
 
 main().catch((err) => {
