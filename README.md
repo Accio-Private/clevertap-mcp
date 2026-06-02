@@ -7,19 +7,12 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for the
 ## Features
 
 - **Multi-project** — manage multiple CleverTap accounts from a single server instance
-- **Guided setup** — if no project is configured, `clevertap_configure` walks you through the process
 - **Full API coverage** — events, profiles, campaigns, and reports
 - **Async polling** — long-running operations (event/profile counts) are polled automatically
 
 ---
 
 ## Tools
-
-### Meta
-| Tool | Description |
-|------|-------------|
-| `clevertap_configure` | Guided setup to add a project or generate the `CLEVERTAP_PROJECTS` config |
-| `clevertap_list_projects` | List all configured projects and their regions |
 
 ### Events
 | Tool | Description |
