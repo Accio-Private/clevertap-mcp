@@ -86,15 +86,23 @@ export class JwtService {
       return jwt.verify(token, this.secret, {
         algorithms: ["HS256"],
       }) as TokenPayload;
-    } catch {
+    } catch (err) {
+      const name = err instanceof Error ? err.constructor.name : "UnknownError";
+      const msg  = err instanceof Error ? err.message : String(err);
+      console.error(`[DEBUG][jwt] verifyToken failed — ${name}: ${msg} (token prefix: ${token.slice(0, 20)}...)`);
       return null;
     }
   }
 
   verifyAccessToken(token: string): AuthInfo {
+    console.error(`[DEBUG][jwt] verifyAccessToken called (token prefix: ${token.slice(0, 20)}...)`);
     const payload = this.verifyToken(token);
     if (!payload) throw new Error("Invalid or expired token");
-    if (payload.type !== "access") throw new Error("Not an access token");
+    if (payload.type !== "access") {
+      console.error(`[DEBUG][jwt] token type mismatch — expected "access", got "${payload.type}"`);
+      throw new Error("Not an access token");
+    }
+    console.error(`[DEBUG][jwt] token OK — sub: ${payload.sub}, azp: ${payload.azp}, exp: ${payload.exp ? new Date(payload.exp * 1000).toISOString() : "none"}`);
 
     return {
       token,

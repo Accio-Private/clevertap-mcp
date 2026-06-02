@@ -208,6 +208,10 @@ async function main() {
     !!process.env.GOOGLE_CLIENT_SECRET &&
     !!process.env.REDIS_HOST;
 
+  console.error(
+    `[DEBUG][auth] OAuth env check — MCP_JWT_SECRET: ${!!process.env.MCP_JWT_SECRET}, GOOGLE_CLIENT_ID: ${!!process.env.GOOGLE_CLIENT_ID}, GOOGLE_CLIENT_SECRET: ${!!process.env.GOOGLE_CLIENT_SECRET}, REDIS_HOST: ${!!process.env.REDIS_HOST} → oauthEnabled: ${oauthEnabled}`,
+  );
+
   if (oauthEnabled) {
     const serverUrl =
       process.env.MCP_SERVER_URL ?? `http://localhost:${PORT}`;
@@ -274,7 +278,16 @@ async function main() {
       resourceMetadataUrl,
     });
 
-    app.use("/mcp", bearerAuth, (req, res, next) => {
+    app.use("/mcp", (req, _res, next) => {
+      const authHeader = req.headers["authorization"];
+      if (authHeader) {
+        const prefix = authHeader.slice(0, 30);
+        console.error(`[DEBUG][auth] /mcp request — Authorization header present (prefix: "${prefix}...")`);
+      } else {
+        console.error(`[DEBUG][auth] /mcp request — Authorization header MISSING`);
+      }
+      next();
+    }, bearerAuth, (req, res, next) => {
       transport.handleRequest(req, res, req.body).catch(next);
     });
 
