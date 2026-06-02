@@ -122,22 +122,6 @@ export const profileTools = [
     },
   },
   {
-    name: "clevertap_delete_profile",
-    description:
-      "Delete one or more user profiles from CleverTap. Processing occurs during non-business hours. Max 100 IDs per request.",
-    inputSchema: z.object({
-      identity: z
-        .union([z.string(), z.array(z.string())])
-        .describe(
-          "Identity or array of identities to delete (email, phone, or custom ID)"
-        ),
-    }),
-    handler: async (client: CleverTapClient, args: unknown) => {
-      const { identity } = args as { identity: string | string[] };
-      return client.post("/delete/profiles.json", { identity });
-    },
-  },
-  {
     name: "clevertap_upload_device_token",
     description:
       "Upload a push notification device token and associate it with a user profile. Identified by objectId (GUID) only — not by identity or email. For Chrome web push tokens, also provide chrome_keys.",

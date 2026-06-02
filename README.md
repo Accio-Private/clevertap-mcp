@@ -36,7 +36,6 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for the
 | `clevertap_get_profile` | Look up a single user by identity, email, or objectId |
 | `clevertap_get_profiles_by_event` | Get profiles of users who performed an event |
 | `clevertap_get_profiles_cursor` | Fetch the next page of profile results via cursor |
-| `clevertap_delete_profile` | Delete a user profile |
 | `clevertap_upload_device_token` | Register a push token for a user |
 | `clevertap_get_profile_count` | Count profiles matching a segment |
 | `clevertap_demerge_profiles` | Split merged profiles apart |
