@@ -235,6 +235,14 @@ async function main() {
     );
 
     // Standard MCP OAuth endpoints + .well-known metadata
+    // Log all OAuth flow requests to surface failures in /authorize, /token, /register
+    app.use((req, _res, next) => {
+      const oauthPaths = ["/authorize", "/token", "/register", "/revoke", "/.well-known"];
+      if (oauthPaths.some(p => req.path.startsWith(p))) {
+        console.error(`[DEBUG][oauth] ${req.method} ${req.path} — body keys: ${Object.keys(req.body ?? {}).join(", ") || "(none)"}`);
+      }
+      next();
+    });
     app.use(
       mcpAuthRouter({
         provider,
@@ -253,18 +261,22 @@ async function main() {
         OAUTH_SESSION_COOKIE
       ];
 
+      console.error(`[DEBUG][oauth] /auth/callback — code: ${!!code}, state: ${!!state}, cookieSessionId: ${!!cookieSessionId}, stateMatch: ${state === cookieSessionId}`);
+
       if (!code || !state || state !== cookieSessionId) {
+        console.error(`[DEBUG][oauth] /auth/callback rejected — code: ${!!code}, state: ${!!state}, cookieMatch: ${state === cookieSessionId}`);
         res.status(400).send("Invalid OAuth callback: state mismatch or missing code");
         return;
       }
 
       try {
         const redirectUrl = await provider.handleGoogleCallback(code, state);
+        console.error(`[DEBUG][oauth] /auth/callback success — redirecting to: ${redirectUrl.split("?")[0]}...`);
         res.clearCookie(OAUTH_SESSION_COOKIE);
         res.redirect(redirectUrl);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        console.error("[OAuth callback]", message);
+        console.error("[OAuth callback] ERROR:", message);
         res.status(500).send(`OAuth callback failed: ${message}`);
       }
     });
