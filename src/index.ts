@@ -30,7 +30,10 @@ if (projectsEnv) {
   try {
     projectsConfig = JSON.parse(projectsEnv);
   } catch (e) {
-    console.error("Error: CLEVERTAP_PROJECTS is not valid JSON.", e);
+    console.error(
+      `Error: CLEVERTAP_PROJECTS is not valid JSON. Actual value is: ${projectsEnv}`,
+      e,
+    );
     process.exit(1);
   }
   if (!Array.isArray(projectsConfig)) {
