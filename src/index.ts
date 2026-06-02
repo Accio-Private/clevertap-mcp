@@ -74,12 +74,6 @@ if (projectsEnv) {
 const projectNames = Array.from(clients.keys());
 const defaultProject = projectNames[0];
 
-// --- Server ---
-const server = new McpServer({
-  name: "clevertap-mcp",
-  version: "1.0.0",
-});
-
 const allTools = [
   ...eventTools,
   ...profileTools,
@@ -88,92 +82,99 @@ const allTools = [
   ...genericTools,
 ];
 
-for (const tool of allTools) {
-  // Extend every tool's schema with an optional `project` field
-  const extendedSchema = tool.inputSchema.extend({
-    project: z
-      .enum(projectNames as [string, ...string[]])
-      .optional()
-      .describe(
-        `CleverTap project to use. Available: ${projectNames.join(", ")}. Defaults to "${defaultProject}".`,
-      ),
+// --- Server factory ---
+// A fresh McpServer + transport must be created per request in stateless mode.
+// Reusing a single server across requests causes the second `initialize` to
+// fail with 500 because the server's protocol state is already "initialized".
+function createServer(): McpServer {
+  const server = new McpServer({
+    name: "clevertap-mcp",
+    version: "1.0.0",
   });
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  server.tool(
-    tool.name,
-    tool.description,
-    extendedSchema.shape as any,
-    async (args: unknown) => {
-      const { project: projectArg, ...toolArgs } = args as Record<
-        string,
-        unknown
-      > & { project?: string };
-      const projectName = projectArg ?? defaultProject;
-      const client = clients.get(projectName);
+  for (const tool of allTools) {
+    // Extend every tool's schema with an optional `project` field
+    const extendedSchema = tool.inputSchema.extend({
+      project: z
+        .enum(projectNames as [string, ...string[]])
+        .optional()
+        .describe(
+          `CleverTap project to use. Available: ${projectNames.join(", ")}. Defaults to "${defaultProject}".`,
+        ),
+    });
 
-      if (!client) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error: Unknown project "${projectName}". Available: ${projectNames.join(", ")}`,
-            },
-          ],
-          isError: true,
-        };
-      }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    server.tool(
+      tool.name,
+      tool.description,
+      extendedSchema.shape as any,
+      async (args: unknown) => {
+        const { project: projectArg, ...toolArgs } = args as Record<
+          string,
+          unknown
+        > & { project?: string };
+        const projectName = projectArg ?? defaultProject;
+        const client = clients.get(projectName);
 
-      try {
-        const result = await tool.handler(client, toolArgs);
-        return {
-          content: [
-            { type: "text" as const, text: JSON.stringify(result, null, 2) },
-          ],
-        };
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : String(error);
-        return {
-          content: [{ type: "text" as const, text: `Error: ${message}` }],
-          isError: true,
-        };
-      }
-    },
-  );
-}
+        if (!client) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Error: Unknown project "${projectName}". Available: ${projectNames.join(", ")}`,
+              },
+            ],
+            isError: true,
+          };
+        }
 
-// ── Web (browser) tools ──────────────────────────────────────────────────────
-const webMeta = { projectNames, defaultProject, projectMeta, webSessions };
-for (const tool of webTools) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  server.tool(
-    tool.name,
-    tool.description,
-    tool.inputSchema.shape as any,
-    async (args: unknown) => {
-      try {
-        const result = await (tool.handler as any)(null, args, webMeta);
-        return result;
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : String(error);
-        return {
-          content: [{ type: "text" as const, text: `Error: ${message}` }],
-          isError: true,
-        };
-      }
-    },
-  );
+        try {
+          const result = await tool.handler(client, toolArgs);
+          return {
+            content: [
+              { type: "text" as const, text: JSON.stringify(result, null, 2) },
+            ],
+          };
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          return {
+            content: [{ type: "text" as const, text: `Error: ${message}` }],
+            isError: true,
+          };
+        }
+      },
+    );
+  }
+
+  // ── Web (browser) tools ────────────────────────────────────────────────────
+  const webMeta = { projectNames, defaultProject, projectMeta, webSessions };
+  for (const tool of webTools) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    server.tool(
+      tool.name,
+      tool.description,
+      tool.inputSchema.shape as any,
+      async (args: unknown) => {
+        try {
+          const result = await (tool.handler as any)(null, args, webMeta);
+          return result;
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          return {
+            content: [{ type: "text" as const, text: `Error: ${message}` }],
+            isError: true,
+          };
+        }
+      },
+    );
+  }
+
+  return server;
 }
 
 async function main() {
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined, // stateless mode
-  });
-
-  await server.connect(transport);
-
   const PORT = parseInt(process.env.PORT ?? "3000", 10);
   const app = express();
 
@@ -301,13 +302,16 @@ async function main() {
       }
       next();
     }, bearerAuth, async (req, res, next) => {
+      const mcpMethod = (req.body as Record<string, unknown>)?.method ?? "(no method / GET)";
       try {
+        const server = createServer();
+        const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+        res.on("close", () => { transport.close(); server.close(); });
+        await server.connect(transport);
         await transport.handleRequest(req, res, req.body);
-        const mcpMethod = (req.body as Record<string, unknown>)?.method ?? "(no method / GET)";
         console.error(`[DEBUG][mcp] ${req.method} /mcp — transport OK — MCP: ${mcpMethod} — status: ${res.statusCode}`);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        const mcpMethod = (req.body as Record<string, unknown>)?.method ?? "(no method / GET)";
         console.error(`[DEBUG][mcp] ${req.method} /mcp — transport ERROR — MCP: ${mcpMethod} — ${msg}`);
         next(err);
       }
@@ -318,8 +322,16 @@ async function main() {
     );
   } else {
     // No OAuth — serve /mcp without authentication (local / stdio use)
-    app.use("/mcp", (req, res, next) => {
-      transport.handleRequest(req, res, req.body).catch(next);
+    app.use("/mcp", async (req, res, next) => {
+      try {
+        const server = createServer();
+        const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+        res.on("close", () => { transport.close(); server.close(); });
+        await server.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+      } catch (err) {
+        next(err);
+      }
     });
 
     if (
