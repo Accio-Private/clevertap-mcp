@@ -1,6 +1,7 @@
 #!/usr/bin/env node
+import { createServer } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { CleverTapClient, CleverTapRegion } from "./client.js";
 import { eventTools } from "./tools/events.js";
@@ -293,9 +294,22 @@ if (clients.size === 0) {
 }
 
 async function main() {
-  const transport = new StdioServerTransport();
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined, // stateless mode
+  });
+
   await server.connect(transport);
-  console.error(`CleverTap MCP server running — projects: ${projectNames.join(", ")}`);
+
+  const PORT = parseInt(process.env.PORT ?? "3000", 10);
+  const httpServer = createServer((req, res) => {
+    transport.handleRequest(req, res);
+  });
+
+  httpServer.listen(PORT, () => {
+    console.error(
+      `CleverTap MCP server listening on http://localhost:${PORT} — projects: ${projectNames.join(", ")}`
+    );
+  });
 }
 
 main().catch((err) => {
