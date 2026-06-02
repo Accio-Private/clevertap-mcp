@@ -341,9 +341,9 @@ async function main() {
     transport.handleRequest(req, res);
   });
 
-  httpServer.listen(PORT, () => {
+  httpServer.listen(PORT, "0.0.0.0", () => {
     console.error(
-      `CleverTap MCP server listening on http://localhost:${PORT} — projects: ${projectNames.join(", ")}`,
+      `CleverTap MCP server listening on http://0.0.0.0:${PORT} — projects: ${projectNames.join(", ")}`,
     );
   });
 }
