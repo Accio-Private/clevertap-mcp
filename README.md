@@ -117,16 +117,6 @@ The server reads project credentials from the `CLEVERTAP_PROJECTS` environment v
 
 **Supported regions:** `in1`, `us1`, `eu1`, `sg1`, `aps3`, `mec1`
 
-### Single-project fallback
-
-You can also use individual environment variables for a single project:
-
-```bash
-CLEVERTAP_ACCOUNT_ID=XXX-XXX-XXXX
-CLEVERTAP_PASSCODE=YYY-YYY-YYYY
-CLEVERTAP_REGION=us1
-```
-
 ---
 
 ## Adding to Claude Desktop

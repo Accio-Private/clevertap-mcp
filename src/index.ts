@@ -14,7 +14,6 @@ import { webTools, webSessions } from "./tools/web.js";
 // --- Build projects map ---
 // CLEVERTAP_PROJECTS accepts a JSON array:
 // [ { "name": "prod", "account_id": "...", "passcode": "...", "region": "us1" }, ... ]
-// Falls back to single project via CLEVERTAP_ACCOUNT_ID / CLEVERTAP_PASSCODE / CLEVERTAP_REGION.
 
 const clients = new Map<string, CleverTapClient>();
 const projectMeta = new Map<string, { accountId: string; region: string }>();
@@ -58,19 +57,6 @@ if (projectsEnv) {
     );
     projectMeta.set(cfg.name, { accountId: cfg.account_id, region });
   }
-} else {
-  // Legacy single-project mode
-  const accountId = process.env.CLEVERTAP_ACCOUNT_ID;
-  const passcode = process.env.CLEVERTAP_PASSCODE;
-  const region = (process.env.CLEVERTAP_REGION ?? "in1") as CleverTapRegion;
-  if (accountId && passcode) {
-    clients.set(
-      "default",
-      new CleverTapClient({ accountId, passcode, region }),
-    );
-    projectMeta.set("default", { accountId, region });
-  }
-  // If neither is set, fall through to the setup tool registration below.
 }
 
 const projectNames = Array.from(clients.keys());
@@ -134,12 +120,6 @@ if (clients.size === 0) {
         project_name: string;
       };
 
-      const singleVars = [
-        `CLEVERTAP_ACCOUNT_ID=${account_id}`,
-        `CLEVERTAP_PASSCODE=${passcode}`,
-        `CLEVERTAP_REGION=${region}`,
-      ].join("\n");
-
       const multiArray = [{ name: project_name, account_id, passcode, region }];
       const multiJson = JSON.stringify(multiArray, null, 2);
       const multiInline = JSON.stringify(multiArray);
@@ -147,22 +127,17 @@ if (clients.size === 0) {
       const text = [
         "✅ Credentials received!",
         "",
-        "Choose one of the two options below, add it to your MCP server config, then restart the server.",
+        "Add the following env variable to your MCP server config, then restart the server.",
         "",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        "Option A — Individual env variables (single project)",
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        singleVars,
-        "",
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        "Option B — CLEVERTAP_PROJECTS (supports multiple projects)",
+        "CLEVERTAP_PROJECTS",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         `CLEVERTAP_PROJECTS=${multiInline}`,
         "",
         "Pretty-printed for reference:",
         multiJson,
         "",
-        "After saving the env variables, restart the MCP server. All CleverTap tools will be available once it reconnects.",
+        "After saving the env variable, restart the MCP server. All CleverTap tools will be available once it reconnects.",
       ].join("\n");
 
       return { content: [{ type: "text" as const, text }] };
