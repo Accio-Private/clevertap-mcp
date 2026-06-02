@@ -21,11 +21,16 @@ const projectMeta = new Map<string, { accountId: string; region: string }>();
 
 const projectsEnv = process.env.CLEVERTAP_PROJECTS;
 if (projectsEnv) {
-  let projectsConfig: Array<{ name: string; account_id: string; passcode: string; region?: string }>;
+  let projectsConfig: Array<{
+    name: string;
+    account_id: string;
+    passcode: string;
+    region?: string;
+  }>;
   try {
     projectsConfig = JSON.parse(projectsEnv);
-  } catch {
-    console.error("Error: CLEVERTAP_PROJECTS is not valid JSON.");
+  } catch (e) {
+    console.error("Error: CLEVERTAP_PROJECTS is not valid JSON.", e);
     process.exit(1);
   }
   if (!Array.isArray(projectsConfig)) {
@@ -34,11 +39,20 @@ if (projectsEnv) {
   }
   for (const cfg of projectsConfig) {
     if (!cfg.name || !cfg.account_id || !cfg.passcode) {
-      console.error(`Error: Every project entry must have name, account_id, and passcode.`);
+      console.error(
+        `Error: Every project entry must have name, account_id, and passcode.`,
+      );
       process.exit(1);
     }
     const region = (cfg.region ?? "in1") as CleverTapRegion;
-    clients.set(cfg.name, new CleverTapClient({ accountId: cfg.account_id, passcode: cfg.passcode, region }));
+    clients.set(
+      cfg.name,
+      new CleverTapClient({
+        accountId: cfg.account_id,
+        passcode: cfg.passcode,
+        region,
+      }),
+    );
     projectMeta.set(cfg.name, { accountId: cfg.account_id, region });
   }
 } else {
@@ -47,7 +61,10 @@ if (projectsEnv) {
   const passcode = process.env.CLEVERTAP_PASSCODE;
   const region = (process.env.CLEVERTAP_REGION ?? "in1") as CleverTapRegion;
   if (accountId && passcode) {
-    clients.set("default", new CleverTapClient({ accountId, passcode, region }));
+    clients.set(
+      "default",
+      new CleverTapClient({ accountId, passcode, region }),
+    );
     projectMeta.set("default", { accountId, region });
   }
   // If neither is set, fall through to the setup tool registration below.
@@ -62,36 +79,42 @@ const server = new McpServer({
   version: "1.0.0",
 });
 
-const allTools = [...eventTools, ...profileTools, ...campaignTools, ...reportTools, ...genericTools];
+const allTools = [
+  ...eventTools,
+  ...profileTools,
+  ...campaignTools,
+  ...reportTools,
+  ...genericTools,
+];
 
 if (clients.size === 0) {
   // ── No project configured — register a guided setup tool ──────────────────
   console.error(
-    "CleverTap MCP: no project configured. Register the clevertap_configure tool to guide setup."
+    "CleverTap MCP: no project configured. Register the clevertap_configure tool to guide setup.",
   );
 
   const setupSchema = z.object({
     account_id: z
       .string()
       .describe(
-        "CleverTap Account ID — found in the CleverTap dashboard under Settings → Accounts"
+        "CleverTap Account ID — found in the CleverTap dashboard under Settings → Accounts",
       ),
     passcode: z
       .string()
       .describe(
-        "CleverTap Passcode — found in the CleverTap dashboard under Settings → Accounts"
+        "CleverTap Passcode — found in the CleverTap dashboard under Settings → Accounts",
       ),
     region: z
       .enum(["in1", "us1", "eu1", "sg1", "aps3", "mec1"])
       .default("in1")
       .describe(
-        "Data residency region: in1 (India), us1 (US), eu1 (Europe), sg1 (Singapore), aps3 (Asia-Pacific), mec1 (Middle East)"
+        "Data residency region: in1 (India), us1 (US), eu1 (Europe), sg1 (Singapore), aps3 (Asia-Pacific), mec1 (Middle East)",
       ),
     project_name: z
       .string()
       .default("default")
       .describe(
-        'Label for this project. Use any short name (e.g. "production", "staging"). Defaults to "default".'
+        'Label for this project. Use any short name (e.g. "production", "staging"). Defaults to "default".',
       ),
   });
 
@@ -140,7 +163,7 @@ if (clients.size === 0) {
       ].join("\n");
 
       return { content: [{ type: "text" as const, text }] };
-    }
+    },
   );
 } else {
   // ── Projects configured — register all normal tools ────────────────────────
@@ -164,7 +187,7 @@ if (clients.size === 0) {
         `If omitted, the default project "${defaultProject}" is used.`,
       ].join("\n");
       return { content: [{ type: "text" as const, text }] };
-    }
+    },
   );
 
   // Configure / add-project tool (also available when projects are configured)
@@ -172,24 +195,24 @@ if (clients.size === 0) {
     account_id: z
       .string()
       .describe(
-        "CleverTap Account ID — found in the CleverTap dashboard under Settings → Accounts"
+        "CleverTap Account ID — found in the CleverTap dashboard under Settings → Accounts",
       ),
     passcode: z
       .string()
       .describe(
-        "CleverTap Passcode — found in the CleverTap dashboard under Settings → Accounts"
+        "CleverTap Passcode — found in the CleverTap dashboard under Settings → Accounts",
       ),
     region: z
       .enum(["in1", "us1", "eu1", "sg1", "aps3", "mec1"])
       .default("in1")
       .describe(
-        "Data residency region: in1 (India), us1 (US), eu1 (Europe), sg1 (Singapore), aps3 (Asia-Pacific), mec1 (Middle East)"
+        "Data residency region: in1 (India), us1 (US), eu1 (Europe), sg1 (Singapore), aps3 (Asia-Pacific), mec1 (Middle East)",
       ),
     project_name: z
       .string()
       .default("default")
       .describe(
-        'Label for this project (e.g. "production", "staging"). Must be unique.'
+        'Label for this project (e.g. "production", "staging"). Must be unique.',
       ),
   });
 
@@ -207,10 +230,20 @@ if (clients.size === 0) {
       };
 
       // Build a merged array that includes existing projects + the new one
-      const merged: Array<{ name: string; account_id: string; passcode: string; region: string }> = [];
+      const merged: Array<{
+        name: string;
+        account_id: string;
+        passcode: string;
+        region: string;
+      }> = [];
       for (const [name, meta] of projectMeta.entries()) {
         // We don't store passcodes in memory — placeholder so the user knows to keep them
-        merged.push({ name, account_id: meta.accountId, passcode: "<keep-existing-passcode>", region: meta.region });
+        merged.push({
+          name,
+          account_id: meta.accountId,
+          passcode: "<keep-existing-passcode>",
+          region: meta.region,
+        });
       }
       merged.push({ name: project_name, account_id, passcode, region });
 
@@ -235,7 +268,7 @@ if (clients.size === 0) {
       ].join("\n");
 
       return { content: [{ type: "text" as const, text }] };
-    }
+    },
   );
 
   for (const tool of allTools) {
@@ -245,51 +278,76 @@ if (clients.size === 0) {
         .enum(projectNames as [string, ...string[]])
         .optional()
         .describe(
-          `CleverTap project to use. Available: ${projectNames.join(", ")}. Defaults to "${defaultProject}".`
+          `CleverTap project to use. Available: ${projectNames.join(", ")}. Defaults to "${defaultProject}".`,
         ),
     });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    server.tool(tool.name, tool.description, extendedSchema.shape as any, async (args: unknown) => {
-      const { project: projectArg, ...toolArgs } = args as Record<string, unknown> & { project?: string };
-      const projectName = projectArg ?? defaultProject;
-      const client = clients.get(projectName);
+    server.tool(
+      tool.name,
+      tool.description,
+      extendedSchema.shape as any,
+      async (args: unknown) => {
+        const { project: projectArg, ...toolArgs } = args as Record<
+          string,
+          unknown
+        > & { project?: string };
+        const projectName = projectArg ?? defaultProject;
+        const client = clients.get(projectName);
 
-      if (!client) {
-        return {
-          content: [{ type: "text" as const, text: `Error: Unknown project "${projectName}". Available: ${projectNames.join(", ")}` }],
-          isError: true,
-        };
-      }
+        if (!client) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Error: Unknown project "${projectName}". Available: ${projectNames.join(", ")}`,
+              },
+            ],
+            isError: true,
+          };
+        }
 
-      try {
-        const result = await tool.handler(client, toolArgs);
-        return {
-          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
-        };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return {
-          content: [{ type: "text" as const, text: `Error: ${message}` }],
-          isError: true,
-        };
-      }
-    });
+        try {
+          const result = await tool.handler(client, toolArgs);
+          return {
+            content: [
+              { type: "text" as const, text: JSON.stringify(result, null, 2) },
+            ],
+          };
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          return {
+            content: [{ type: "text" as const, text: `Error: ${message}` }],
+            isError: true,
+          };
+        }
+      },
+    );
   }
 
   // ── Web (browser) tools ──────────────────────────────────────────────────────
   const webMeta = { projectNames, defaultProject, projectMeta, webSessions };
   for (const tool of webTools) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    server.tool(tool.name, tool.description, tool.inputSchema.shape as any, async (args: unknown) => {
-      try {
-        const result = await (tool.handler as any)(null, args, webMeta);
-        return result;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return { content: [{ type: "text" as const, text: `Error: ${message}` }], isError: true };
-      }
-    });
+    server.tool(
+      tool.name,
+      tool.description,
+      tool.inputSchema.shape as any,
+      async (args: unknown) => {
+        try {
+          const result = await (tool.handler as any)(null, args, webMeta);
+          return result;
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          return {
+            content: [{ type: "text" as const, text: `Error: ${message}` }],
+            isError: true,
+          };
+        }
+      },
+    );
   }
 }
 
@@ -307,7 +365,7 @@ async function main() {
 
   httpServer.listen(PORT, () => {
     console.error(
-      `CleverTap MCP server listening on http://localhost:${PORT} — projects: ${projectNames.join(", ")}`
+      `CleverTap MCP server listening on http://localhost:${PORT} — projects: ${projectNames.join(", ")}`,
     );
   });
 }
