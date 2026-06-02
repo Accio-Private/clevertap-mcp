@@ -3,9 +3,9 @@ import { randomBytes } from "node:crypto";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 
-const ACCESS_TOKEN_EXPIRES_IN = "1h";
-const REFRESH_TOKEN_EXPIRES_IN = "30d";
-const ACCESS_TOKEN_SECONDS = 3600;
+const ACCESS_TOKEN_EXPIRES_IN = "7d";
+const REFRESH_TOKEN_EXPIRES_IN = "90d";
+const ACCESS_TOKEN_SECONDS = 7 * 24 * 3600; // 7 days
 
 export type TokenPayload = {
   sub: string;
