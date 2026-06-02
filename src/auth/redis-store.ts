@@ -9,13 +9,13 @@ const TTL_CLIENT = 90 * 24 * 60 * 60; // 90 days
 const TTL_USER_PROFILE = 90 * 24 * 60 * 60; // 90 days
 
 const key = {
-  client: (id: string) => `mcp:oauth:client:${id}`,
-  clientByName: (name: string) => `mcp:oauth:client_name:${name}`,
-  authCode: (code: string) => `mcp:oauth:code:${code}`,
-  session: (id: string) => `mcp:oauth:session:${id}`,
-  userProfile: (id: string) => `mcp:oauth:profile:${id}`,
+  client: (id: string) => `clevertap-mcp:oauth:client:${id}`,
+  clientByName: (name: string) => `clevertap-mcp:oauth:client_name:${name}`,
+  authCode: (code: string) => `clevertap-mcp:oauth:code:${code}`,
+  session: (id: string) => `clevertap-mcp:oauth:session:${id}`,
+  userProfile: (id: string) => `clevertap-mcp:oauth:profile:${id}`,
   providerIndex: (provider: string, providerUserId: string) =>
-    `mcp:oauth:profile_idx:${provider}:${providerUserId}`,
+    `clevertap-mcp:oauth:profile_idx:${provider}:${providerUserId}`,
 };
 
 export type StoredAuthCode = {
