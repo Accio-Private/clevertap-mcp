@@ -371,6 +371,10 @@ async function main() {
   });
   app.options("*", (_req, res) => res.sendStatus(204));
 
+  // ── Health check (required for AWS App Runner and similar platforms) ──────────
+  app.get("/", (_req, res) => res.status(200).json({ status: "ok" }));
+  app.get("/health", (_req, res) => res.status(200).json({ status: "ok" }));
+
   // ── OAuth (only when all four env vars are present) ───────────────────────────
   const oauthEnabled =
     !!process.env.MCP_JWT_SECRET &&
