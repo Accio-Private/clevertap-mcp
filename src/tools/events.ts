@@ -60,25 +60,12 @@ export const eventTools = [
       event_name: z.string().describe("Name of the event to query"),
       from: z.string().describe("Start date in YYYYMMDD format (e.g. '20240101')"),
       to: z.string().describe("End date in YYYYMMDD format (e.g. '20240131')"),
-      groups: z
-        .record(
-          z.object({
-            property: z.string().describe("Event property to group by"),
-            operator: z
-              .enum(["avg", "sum", "min", "max", "count"])
-              .optional()
-              .describe("Aggregation operator"),
-          })
-        )
-        .optional()
-        .describe("Group results by event properties with aggregation"),
     }),
     handler: async (client: CleverTapClient, args: unknown) => {
-      const { event_name, from, to, groups } = args as {
+      const { event_name, from, to } = args as {
         event_name: string;
         from: string;
         to: string;
-        groups?: Record<string, { property: string; operator?: string }>;
       };
 
       const body: Record<string, unknown> = {
@@ -86,7 +73,6 @@ export const eventTools = [
         from: parseInt(from),
         to: parseInt(to),
       };
-      if (groups) body.groups = groups;
 
       return client.post("/events.json", body);
     },

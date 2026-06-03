@@ -125,4 +125,62 @@ export const catalogTools = [
       });
     },
   },
+  {
+    name: "clevertap_complete_multipart_catalog_upload",
+    description:
+      "Final step of a multipart catalog upload. After uploading all file parts to their respective pre-signed URLs (using PUT requests) and collecting the ETag from each response, call this to notify CleverTap the upload is complete. CleverTap merges the parts and processes the catalog.",
+    inputSchema: z.object({
+      name: z
+        .string()
+        .describe("Catalog name (e.g. 'Product_Catalog'). Must be unique unless replace=true"),
+      creator: z
+        .string()
+        .describe("Name of the person uploading the catalog"),
+      email: z
+        .string()
+        .describe("Admin email to receive processing result notifications. Must be a valid CleverTap admin email."),
+      upload_id: z
+        .string()
+        .describe("The uploadId returned by clevertap_get_catalog_multipart_presigned_urls"),
+      e_tags: z
+        .array(
+          z.object({
+            partNumber: z.number().int().describe("Part number (1-indexed)"),
+            eTag: z.string().describe("ETag value returned by S3 after uploading that part"),
+          })
+        )
+        .min(2)
+        .describe("Array of {partNumber, eTag} objects — one per uploaded part, in order"),
+      replace: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe("Set to true to replace an existing catalog with the same name. Default false."),
+      isLocationCatalog: z
+        .boolean()
+        .optional()
+        .describe("Set to true if this is a product location catalog. Default false."),
+    }),
+    handler: async (client: CleverTapClient, args: unknown) => {
+      const { name, creator, email, upload_id, e_tags, replace, isLocationCatalog } = args as {
+        name: string;
+        creator: string;
+        email: string;
+        upload_id: string;
+        e_tags: Array<{ partNumber: number; eTag: string }>;
+        replace?: boolean;
+        isLocationCatalog?: boolean;
+      };
+      const body: Record<string, unknown> = {
+        name,
+        creator,
+        email,
+        uploadId: upload_id,
+        eTags: e_tags,
+        replace: replace ?? false,
+      };
+      if (isLocationCatalog !== undefined) body.isLocationCatalog = isLocationCatalog;
+      return client.postRoot("/upload_catalog_completed", body);
+    },
+  },
 ];

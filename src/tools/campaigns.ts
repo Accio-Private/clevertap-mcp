@@ -48,7 +48,7 @@ export const campaignTools = [
     inputSchema: z.object({
       name: z.string().describe("Campaign name"),
       target_mode: z
-        .enum(["push", "email", "sms", "webpush", "in-app", "webhooks", "whatsapp", "notificationinbox"])
+        .enum(["push", "email", "sms", "webpush", "webhook", "whatsapp", "notificationinbox"])
         .describe("Delivery channel for the campaign"),
       provider_nick_name: z
         .string()
@@ -366,17 +366,17 @@ export const campaignTools = [
           "Target users — provide at least one of: email, identity, or objectId. For bulk sends (>1 user), provide multiple values in the array"
         ),
       kvPairs: z
-        .record(z.string())
+        .record(z.unknown())
         .optional()
         .describe(
-          "Key-value pairs for personalizing the campaign message (e.g. Name, product details). All values must be strings."
+          "Key-value pairs for personalizing the campaign message (e.g. Name, product details). Values may be strings, numbers, arrays, or nested objects."
         ),
     }),
     handler: async (client: CleverTapClient, args: unknown) => {
       const { campaign_id, to, kvPairs } = args as {
         campaign_id: string;
         to: { email?: string[]; identity?: string[]; objectId?: string[] };
-        kvPairs?: Record<string, string>;
+        kvPairs?: Record<string, unknown>;
       };
       return client.post("/send/externaltrigger.json", {
         to,

@@ -56,10 +56,35 @@ export const remoteConfigTools = [
   {
     name: "clevertap_get_variables",
     description:
-      "Retrieve all Remote Config variables defined for this CleverTap project, along with their types, default values, and descriptions.",
-    inputSchema: z.object({}),
-    handler: async (client: CleverTapClient, _args: unknown) => {
-      return client.get("/getVars");
+      "Retrieve Remote Config variable values for a specific user from CleverTap. Provide either identity or clevertapId to look up the user. Returns the variable values applicable to that user (or default values if the user is not found).",
+    inputSchema: z.object({
+      identity: z
+        .string()
+        .optional()
+        .describe("User identity (email, phone, or custom ID). Required if clevertapId is not provided."),
+      clevertapId: z
+        .string()
+        .optional()
+        .describe("CleverTap Global Object ID (GUID). Required if identity is not provided."),
+      includeDefaults: z
+        .boolean()
+        .optional()
+        .describe("If true, also returns variables that have no override set (i.e. returns all defined variables with their default values). Default false."),
+    }),
+    handler: async (client: CleverTapClient, args: unknown) => {
+      const { identity, clevertapId, includeDefaults } = args as {
+        identity?: string;
+        clevertapId?: string;
+        includeDefaults?: boolean;
+      };
+      if (!identity && !clevertapId) {
+        throw new Error("At least one of identity or clevertapId must be provided");
+      }
+      const body: Record<string, unknown> = {};
+      if (identity) body.identity = identity;
+      if (clevertapId) body.clevertapId = clevertapId;
+      if (includeDefaults !== undefined) body.includeDefaults = includeDefaults;
+      return client.post("/getVars", body);
     },
   },
   {
@@ -74,7 +99,7 @@ export const remoteConfigTools = [
     }),
     handler: async (client: CleverTapClient, args: unknown) => {
       const { variable_names } = args as { variable_names: string[] };
-      return client.delete("/deleteVars", { variableNames: variable_names });
+      return client.post("/deleteVars", { variableNames: variable_names });
     },
   },
   {
