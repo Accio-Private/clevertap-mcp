@@ -22,6 +22,9 @@ import { campaignTools } from "./tools/campaigns.js";
 import { reportTools } from "./tools/reports.js";
 import { genericTools } from "./tools/generic.js";
 import { webTools, webSessions } from "./tools/web.js";
+import { customListTools } from "./tools/custom_list.js";
+import { catalogTools } from "./tools/catalog.js";
+import { remoteConfigTools } from "./tools/remote_config.js";
 
 // --- Build projects map ---
 // CLEVERTAP_PROJECTS accepts a JSON array:
@@ -80,6 +83,9 @@ const allTools = [
   ...campaignTools,
   ...reportTools,
   ...genericTools,
+  ...customListTools,
+  ...catalogTools,
+  ...remoteConfigTools,
 ];
 
 // --- Server factory ---
