@@ -14,15 +14,22 @@ export const customListTools = [
   {
     name: "clevertap_upload_custom_list_file",
     description:
-      "Step 2 of 3 for uploading a custom list segment. Uploads your CSV content directly to the pre-signed S3 URL obtained in step 1. The CSV should contain user identifiers (Identity, Email, or Phone columns). This performs a PUT request to the S3 URL — no CleverTap auth needed for this step.",
+      "Step 2 of 3 for uploading a custom list segment. Uploads your CSV content directly to the pre-signed S3 URL obtained in step 1. The CSV MUST have exactly two columns: 'Type' and 'Identity'. This performs a PUT request to the S3 URL — no CleverTap auth needed for this step.",
     inputSchema: z.object({
       presigned_url: z
         .string()
-        .describe("The pre-signed S3 URL returned by clevertap_get_custom_list_presigned_url"),
+        .describe(
+          "The pre-signed S3 URL returned by clevertap_get_custom_list_presigned_url",
+        ),
       csv_content: z
         .string()
         .describe(
-          "The CSV file content as a string. Must include a header row with at least one of: Identity, Email, or Phone. Example: 'Identity\\nuser1\\nuser2'"
+          "The CSV content as a string. REQUIRED format: two columns with header row 'Type,Identity'.\n" +
+            "  - 'Type' column: 'i' for identity (phone number, email, or custom ID) OR 'g' for CleverTap GUID/objectId\n" +
+            "  - 'Identity' column: the actual identifier value\n" +
+            "Example (phone/email/custom ID): 'Type,Identity\\ni,+919877308060\\ni,[email protected]'\n" +
+            "Example (CleverTap GUIDs):        'Type,Identity\\ng,m-TBnMjKIz1I04WnCkqLpMMDssAckVIN'\n" +
+            "Using a single-column or wrong header will cause silent failure (API returns success but email reports an error).",
         ),
     }),
     handler: async (_client: CleverTapClient, args: unknown) => {
@@ -41,12 +48,15 @@ export const customListTools = [
 
       if (!response.ok) {
         const error = await response.text();
-        throw new Error(`S3 upload failed with status ${response.status}: ${error}`);
+        throw new Error(
+          `S3 upload failed with status ${response.status}: ${error}`,
+        );
       }
 
       return {
         status: "success",
-        message: "File uploaded successfully to S3. Proceed to step 3: clevertap_complete_custom_list_upload",
+        message:
+          "File uploaded successfully to S3. Proceed to step 3: clevertap_complete_custom_list_upload",
         http_status: response.status,
       };
     },
@@ -58,17 +68,17 @@ export const customListTools = [
     inputSchema: z.object({
       name: z
         .string()
-        .describe("Name for the custom list segment (will appear in the CleverTap dashboard)"),
-      creator: z
-        .string()
-        .describe("Name of the person creating this segment"),
+        .describe(
+          "Name for the custom list segment (will appear in the CleverTap dashboard)",
+        ),
+      creator: z.string().describe("Name of the person creating this segment"),
       filename: z
         .string()
         .describe("The filename of the CSV you uploaded (e.g. 'my_list.csv')"),
       email: z
         .string()
         .describe(
-          "Admin email address to receive the processing result notification. Must be a valid CleverTap admin email."
+          "Admin email address to receive the processing result notification. Must be a valid CleverTap admin email.",
         ),
       url: z
         .string()
@@ -78,7 +88,8 @@ export const customListTools = [
         .optional()
         .default(false)
         .describe(
-          "Set to true to replace users in an existing segment with the same name. Default false (creates new segment)."
+          "Set to true to replace an existing segment with the same name. Default false (creates new segment). " +
+            "IMPORTANT: if a segment with the same name already exists — even from a previous failed attempt — you MUST set replace=true or this call will fail with a 'duplicate_name' error.",
         ),
     }),
     handler: async (client: CleverTapClient, args: unknown) => {
