@@ -144,6 +144,7 @@ function createServer(): McpServer {
         } catch (error) {
           const message =
             error instanceof Error ? error.message : String(error);
+          console.log(`[tool:${tool.name}] failed:`, error);
           return {
             content: [{ type: "text" as const, text: `Error: ${message}` }],
             isError: true,
@@ -168,6 +169,7 @@ function createServer(): McpServer {
         } catch (error) {
           const message =
             error instanceof Error ? error.message : String(error);
+          console.log(`[tool:${tool.name}] failed:`, error);
           return {
             content: [{ type: "text" as const, text: `Error: ${message}` }],
             isError: true,
